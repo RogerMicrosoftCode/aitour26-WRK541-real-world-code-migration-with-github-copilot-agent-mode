@@ -1,0 +1,70 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'infra/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'infra/**'
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Python Validation ──────────────────────────────────────────────────────
+  python-validate:
+    name: Python - Lint & Syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          cd src/python-app
+          pip install -r requirements.txt
+          pip install ruff
+
+      - name: Syntax check
+        run: python -m py_compile src/python-app/webapp/main.py
+
+      - name: Lint with ruff
+        run: ruff check src/python-app/webapp/ --output-format github
+
+  # ── C# Build & Test ────────────────────────────────────────────────────────
+  csharp-build-test:
+    name: C# - Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore src/csharp-app-complete/csharp-app.sln
+
+      - name: Build
+        run: dotnet build src/csharp-app-complete/csharp-app.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test src/csharp-app-complete/csharp-app.sln --configuration Release --no-build --verbosity normal
+
+  # ── Bicep Validation ───────────────────────────────────────────────────────
+  bicep-validate:
+    name: Bicep - Compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure CLI - Bicep build
+        run: az bicep build --file infra/main.bicep --stdout > /dev/null

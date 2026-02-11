@@ -1,0 +1,163 @@
+name: Deploy to Azure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+
+permissions:
+  id-token: write   # For OIDC login
+  contents: read
+
+env:
+  AZURE_BASE_NAME: demoaitourmxJJ
+  AZURE_LOCATION: eastus2
+
+jobs:
+  # ── Build & Test ───────────────────────────────────────────────────────────
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: C# Build & Test
+        run: |
+          dotnet restore src/csharp-app-complete/csharp-app.sln
+          dotnet build src/csharp-app-complete/csharp-app.sln --configuration Release --no-restore
+          dotnet test src/csharp-app-complete/csharp-app.sln --configuration Release --no-build
+
+      - name: Bicep compile
+        run: az bicep build --file infra/main.bicep --stdout > /dev/null
+
+  # ── Deploy Infrastructure ──────────────────────────────────────────────────
+  deploy-infra:
+    name: Deploy Infrastructure
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      pythonAppName: ${{ steps.names.outputs.pythonApp }}
+      csharpAppName: ${{ steps.names.outputs.csharpApp }}
+      resourceGroup: ${{ steps.names.outputs.rg }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Bicep
+        run: |
+          az deployment sub create \
+            --location "${{ env.AZURE_LOCATION }}" \
+            --template-file infra/main.bicep \
+            --parameters infra/params/dev.parameters.json \
+            --name "gha-${{ github.run_number }}"
+
+      - name: Set output names
+        id: names
+        run: |
+          echo "pythonApp=app-${{ env.AZURE_BASE_NAME }}-python" >> $GITHUB_OUTPUT
+          echo "csharpApp=app-${{ env.AZURE_BASE_NAME }}-csharp" >> $GITHUB_OUTPUT
+          echo "rg=rg-${{ env.AZURE_BASE_NAME }}" >> $GITHUB_OUTPUT
+
+  # ── Deploy Python App ──────────────────────────────────────────────────────
+  deploy-python:
+    name: Deploy Python App
+    needs: deploy-infra
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Package Python app
+        run: |
+          cd src/python-app
+          zip -r ../../python-app.zip webapp/ requirements.txt -x "*.pyc" "__pycache__/*"
+
+      - name: Deploy to App Service
+        run: |
+          az webapp deploy \
+            --resource-group ${{ needs.deploy-infra.outputs.resourceGroup }} \
+            --name ${{ needs.deploy-infra.outputs.pythonAppName }} \
+            --src-path python-app.zip \
+            --type zip
+
+  # ── Deploy C# App ──────────────────────────────────────────────────────────
+  deploy-csharp:
+    name: Deploy C# App
+    needs: deploy-infra
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Publish C# app
+        run: |
+          dotnet publish src/csharp-app-complete/csharp-app.csproj \
+            --configuration Release \
+            --output ./publish \
+            --no-self-contained
+
+      - name: Package
+        run: |
+          cd publish
+          zip -r ../csharp-app.zip .
+
+      - name: Deploy to App Service
+        run: |
+          az webapp deploy \
+            --resource-group ${{ needs.deploy-infra.outputs.resourceGroup }} \
+            --name ${{ needs.deploy-infra.outputs.csharpAppName }} \
+            --src-path csharp-app.zip \
+            --type zip
+
+  # ── Smoke Tests ────────────────────────────────────────────────────────────
+  smoke-tests:
+    name: Smoke Tests
+    needs: [deploy-infra, deploy-python, deploy-csharp]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run smoke tests
+        env:
+          BASE_URL_PYTHON: "https://${{ needs.deploy-infra.outputs.pythonAppName }}.azurewebsites.net"
+          BASE_URL_CSHARP: "https://${{ needs.deploy-infra.outputs.csharpAppName }}.azurewebsites.net"
+        run: |
+          chmod +x scripts/run-smoke-tests.sh
+          # Wait for apps to warm up
+          sleep 30
+          ./scripts/run-smoke-tests.sh

@@ -1,0 +1,71 @@
+graph TB
+    subgraph "Cliente"
+        Browser["🌐 Browser / HTTP Client"]
+    end
+
+    subgraph "Python App - src/python-app"
+        PY_ENTRY["Uvicorn ASGI Server\nPort 8000"]
+        PY_FASTAPI["FastAPI App\nmain.py"]
+        PY_DATA["weather.json\n(embedded dataset)"]
+        PY_SWAGGER["Swagger UI\n/docs"]
+        PY_ENTRY --> PY_FASTAPI
+        PY_FASTAPI --> PY_DATA
+        PY_FASTAPI --> PY_SWAGGER
+    end
+
+    subgraph "C# App - src/csharp-app-complete"
+        CS_ENTRY["Kestrel HTTP Server\nPort 5000"]
+        CS_MINIMAL["Minimal APIs\nProgram.cs"]
+        CS_SVC["WeatherService\n(Singleton DI)"]
+        CS_DATA["weather.json\n(embedded dataset)"]
+        CS_SWAGGER["Swagger UI\n/swagger"]
+        CS_ENTRY --> CS_MINIMAL
+        CS_MINIMAL --> CS_SVC
+        CS_SVC --> CS_DATA
+        CS_MINIMAL --> CS_SWAGGER
+    end
+
+    subgraph "Testing"
+        PY_TESTS["pytest\ntest_main.py\nHTTP integration tests"]
+        CS_UNIT["MSTest Unit Tests\nWeatherServiceTests.cs"]
+        CS_INTEG["MSTest Integration Tests\nTest1.cs\nWebApplicationFactory"]
+    end
+
+    subgraph "DevOps & Docs"
+        GHA["GitHub Actions CI\nMkDocs deploy"]
+        DEVC["DevContainer\nPy3.12 + .NET 10"]
+        MKDOCS["MkDocs Material\nWorkshop docs"]
+        GHPAGES["GitHub Pages"]
+    end
+
+    subgraph "Azure (Proposed)"
+        RG["Resource Group\nrg-demoaitourmxJJ"]
+        ASP["App Service Plan\nasp-demoaitourmxJJ\nLinux B1"]
+        APP_PY["App Service Python\napp-demoaitourmxJJ-python"]
+        APP_CS["App Service C#\napp-demoaitourmxJJ-csharp"]
+        KV["Key Vault\nkv-demoaitourmxJJ"]
+        APPI["Application Insights\nappi-demoaitourmxJJ"]
+        LOG["Log Analytics\nlog-demoaitourmxJJ"]
+
+        RG --> ASP
+        ASP --> APP_PY
+        ASP --> APP_CS
+        RG --> KV
+        RG --> APPI
+        APPI --> LOG
+    end
+
+    Browser -->|"HTTP GET"| PY_ENTRY
+    Browser -->|"HTTP GET"| CS_ENTRY
+
+    PY_TESTS -->|"HTTP requests"| PY_ENTRY
+    CS_UNIT -->|"Direct call"| CS_SVC
+    CS_INTEG -->|"In-memory server"| CS_MINIMAL
+
+    GHA -->|"mkdocs gh-deploy"| GHPAGES
+    MKDOCS -->|"build"| GHPAGES
+
+    APP_PY -.->|"Deployed from"| PY_FASTAPI
+    APP_CS -.->|"Deployed from"| CS_MINIMAL
+    APP_PY -.->|"Telemetry"| APPI
+    APP_CS -.->|"Telemetry"| APPI
